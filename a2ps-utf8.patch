@@ -1,0 +1,209 @@
+--- a2ps.pl-1.45.orig	2014-03-17 13:16:06.489872894 +0900
++++ a2ps.pl-1.45	2014-03-17 18:59:43.976939436 +0900
+@@ -40,6 +40,10 @@
+ ;#
+ ;;	$jisconvert = 1;
+ ;#
++;# When this variable is set to 1, a2ps assumes the input text is
++;# Japanese UTF-8.
++;;	$utf8 = 1;
++;#
+ ;# WISH LIST
+ ;#	- better algorithm to determine frame size (buggy on big font)
+ ;#	- print toc matched pattern at the bottom of pages
+@@ -117,6 +121,7 @@ while ($_ = $ARGV[0], s/^-(.+)$/$1/ && s
+     if (s/^(n?)C//)		{$selfconvert	= !$1;			redo;}
+     if (s/^(n?)w//)		{$wide_pages	= !$1;			redo;}
+     if (s/^(n?)c//)		{$jisconvert	= !$1;			redo;}
++    if (s/^(n?)u//)		{$utf8          = !$1;			redo;}
+     if (s/^(n?)v//)		{$visualize	= !$1;			redo;}
+     if (s/^(n?)p//)		{$portrait	= !$1;			redo;}
+     if (s/^(n?)f//)		{$folding	= !$1;			redo;}
+@@ -190,6 +195,15 @@ if ($linesperpage <= 0 || $columnsperlin
+     exit(1);
+ }
+ 
++if ($utf8) {
++    $jisconvert = 0;
++    $knfont = "/Ryumin-Light-UniJIS-UTF8-H";
++    $kbfont = "/GothicBBB-Medium-UniJIS-UTF8-H";
++} else {
++    $knfont = "/Ryumin-Light-H";
++    $kbfont = "/GothicBBB-Medium";
++}
++
+ if ($debug == 2) {
+     require('dumpvar.pl');
+     local($#) = '%.6g';
+@@ -267,7 +281,7 @@ sub print_file {
+ 	    $_ = &expand($_, $tab_w);
+ 	}
+ 	if ($visualize) {
+-	    s/([\200-\377])/'M-'.pack('c',ord($1)&0177)/ge;
++	    s/([\200-\377])/'M-'.pack('c',ord($1)&0177)/ge if (!$utf8);
+ 	    s/([\000-\007\013\016-\032\034-\037])/'^'.pack('c',ord($1)|0100)/ge;
+ 	    s/\0177/^?/g;
+ 	} else {
+@@ -275,8 +289,12 @@ sub print_file {
+ 	}
+ 
+ 	# enclose Japanese text by \05 and \06
+-	s/\e\$[B\@]/\005/g;
+-	s/\e\([BJ]/\006/g;
++	if ($utf8) {
++	    s/([\200-\377]+)/\005$1\006/g;
++	} else {
++	    s/\e\$[B\@]/\005/g;
++	    s/\e\([BJ]/\006/g;
++	}	
+ 
+ 	# enclose overstruck segment by \01 and \02
+ 	if (/\cH/ && $bold) {
+@@ -314,13 +332,15 @@ sub print_file {
+ 		if ($l[$[] =~ s/^9//) { &half_line_forw; next; }
+ 		$w = $esc;
+ 	    }
+-	    if ($folding) {
++	    if ($utf8 && $folding) {
++		($w, $folded) = fold($w, $rest);
++	    } elsif ($folding) {
+ 		$show_width = $rest & ~$kanji;
+ 		if ($show_width < length($w)) {
+ 		    ($w, $folded) = unpack("a$show_width a*", $w);
+ 		}
+ 	    }
+-	    $rest -= length($w);
++	    $rest -= width($w);
+ 	    $w =~ s/([\(\)\\])/\\$1/g;
+ 	    print ' kanji_init' if $kanji && !$kanji_init++;
+ 	    print ' (', $w, ') ', $kanji ? 'ks' : 's';
+@@ -389,7 +409,7 @@ sub max { $_[ ($_[$[] < $_[$[+1]) + $[];
+ sub expand {
+     local($_, $tw) = @_;
+     $tw = 8 unless $tw;
+-    1 while s/^([^\t]*)(\t+)/$1.' 'x(length($2)*$tw-&pwidth($1)%$tw)/e;
++    1 while s/^([^\t]*)(\t+)/$1.' 'x(width($2)*$tw-&pwidth($1)%$tw)/e;
+     $_;
+ }
+ 
+@@ -403,7 +423,7 @@ sub pwidth {
+ 	1 while s/[^\cH]\cH//;
+ 	s/^\cH+//;
+     }
+-    length;
++    width;
+ }
+ 
+ sub jis {
+@@ -474,6 +494,30 @@ sub _euc2jis {
+     tr/\200-\377/\000-\177/;
+     "\e\$B" . $_ . "\e\(B";
+ }
++
++sub width {
++    local($_) = (@_ > 0) ? shift : $_;
++    return tr/\x00-\x7f// + (tr/\xc2-\xfd// << 1);
++}
++
++sub fold {
++    my ($str, $show_width) = @_;
++    my ($width, $len) = (0, 0);
++
++    foreach (split(//, $str)) {
++	if (tr/\x00-\x7f//) {
++	    $width++;
++	} elsif (tr/\xc2-\xfd//) {
++	    $width += 2;
++	}
++	last if ($width > $show_width);
++	$len++;
++    }
++
++    my $left = substr($str, 0, $len, "");
++    my $right = length($str) > 0 ? $str : undef;
++    return $left, $right;
++}
+ 
+ sub print_header {
+     require('ctime.pl');
+@@ -576,23 +620,23 @@ sub date {
+ sub print_template {
+     return if $debug;
+ 
+-    print <<'__TEMPLATE__';
++    print <<"__TEMPLATE__";
+ %!  PostScript Source Code
+ %
+ %  File: imag:/users/local/a2ps/header.ps
+-%  Created: Tue Nov 29 12:14:02 1988 by miguel@imag (Miguel Santana)
++%  Created: Tue Nov 29 12:14:02 1988 by miguel\@imag (Miguel Santana)
+ %  Version: 2.0
+ %  Description: PostScript prolog for a2ps ascii to PostScript program.
+ % 
+ %  Edit History:
+-%  - Original version by evan@csli (Evan Kirshenbaum).
+-%  - Modified by miguel@imag to:
++%  - Original version by evan\@csli (Evan Kirshenbaum).
++%  - Modified by miguel\@imag to:
+ %    1) Correct an overflow bug when printing page number 10 (operator
+ %	cvs).
+ %    2) Define two other variables (sheetwidth, sheetheight) describing
+ %	the physical page (by default A4 format).
+ %    3) Minor changes (reorganization, comments, etc).
+-%  - Modified by tullemans@apolloway.prl.philips.nl
++%  - Modified by tullemans\@apolloway.prl.philips.nl
+ %    1) Correct stack overflows with regard to operators cvs and copy.
+ %       The resulting substrings where in some cases not popped off 
+ %       the stack, what can result in a stack overflow.
+@@ -601,13 +645,13 @@ sub print_template {
+ %       after printing sheet 16 (i.e. page 8) of a file which was 
+ %       actually bigger. For this purpose the definitions of startdoc
+ %       and startpage are changed.
+-%  - Modified by Tim Clark <T.Clark@uk.ac.warwick> to:
++%  - Modified by Tim Clark <T.Clark\@uk.ac.warwick> to:
+ %    1) Print one page per sheet (portrait) as an option.
+ %    2) Reduce size of file name heading, if it's too big.
+ %    3) Save and restore PostScript state at begining/end. It now uses
+ %	conventional %%Page %%Trailer markers.
+ %    4) Print one wide page per sheet in landscape mode as an option.
+-%  - Modified by miguel@imag.fr to
++%  - Modified by miguel\@imag.fr to
+ %    1) Add new option to print n copies of a file.
+ %    2) Add new option to suppress heading printing.
+ %    3) Add new option to suppress page surrounding border printing.
+@@ -615,9 +659,9 @@ sub print_template {
+ %	are now automatically adjusted, depending on font size and
+ %	printing mode used.
+ %    5) Minor changes (best layout, usage message, etc).
+-%  - Modified by kanazawa@sra.co.jp to:
++%  - Modified by kanazawa\@sra.co.jp to:
+ %    1) Handle Japanese code
+-%  - Modified by utashiro@sra.co.jp to:
++%  - Modified by utashiro\@sra.co.jp to:
+ %    1) Fix bug in printing long label
+ %    2) Handle carriage-return
+ %    3) Specify kanji-ascii character retio
+@@ -625,10 +669,10 @@ sub print_template {
+ %    5) Change filename->fname becuase ghostscript has operator filename
+ %    6) Support three different font style
+ %    7) Incorporate B4 paper support and punchmark contributed
+-%       by Masami Ueno <cabbage@kki.esi.yamanashi.ac.jp>
++%       by Masami Ueno <cabbage\@kki.esi.yamanashi.ac.jp>
+ %
+ 
+-% Copyright (c) 1988, Miguel Santana, miguel@imag.imag.fr
++% Copyright (c) 1988, Miguel Santana, miguel\@imag.imag.fr
+ %
+ % Permission is granted to copy and distribute this file in modified
+ % or unmodified form, for noncommercial use, provided (a) this copyright
+@@ -671,8 +715,8 @@ ifelse
+    kanji_initialized not
+    {
+       /bodykfontsize bodyfontsize kanjiAsciiRatio mul def
+-      /bodyknfont /Ryumin-Light-H bodykfontsize getfont def
+-      /bodykbfont /GothicBBB-Medium-H bodykfontsize getfont def
++      /bodyknfont $knfont bodykfontsize getfont def
++      /bodykbfont $kbfont bodykfontsize getfont def
+       /bodykofont bodykbfont [ 1 0 .2 1 0 0 ] makefont def
+       /KanjiRomanDiff 1.2 bodyfontsize mul 1.0 bodykfontsize mul sub def
+       /KanjiRomanDiffHalf KanjiRomanDiff 2 div def
